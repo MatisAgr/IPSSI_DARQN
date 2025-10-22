@@ -7,9 +7,13 @@ import random
 from collections import deque
 import time
 import os
+import signal
+import sys
+import argparse
+import json
 
 # ------------------------------------------------------------------------
-# GPU CONFIGURATION
+# GPU CONFIGURATION (pour google colab)
 # ------------------------------------------------------------------------
 
 gpus = tf.config.list_physical_devices('GPU')
@@ -48,6 +52,23 @@ render_mode = None
 loss_function = 'mse'
 train_interval = 4
 frame_stack = 4
+
+# ------------------------------------------------------------------------
+# COMMAND LINE ARGUMENTS
+# ------------------------------------------------------------------------
+
+parser = argparse.ArgumentParser(description='Train DARQN agent on Pacman')
+parser.add_argument('--resume', type=str, default=None,
+                    help='Resume training from checkpoint (e.g., 180 to load episode_180)')
+parser.add_argument('--episodes', type=int, default=episodes,
+                    help='Number of episodes to train')
+args = parser.parse_args()
+
+if args.episodes != episodes:
+    episodes = args.episodes
+
+resume_from_episode = 0
+resume_checkpoint = args.resume
 
 # ------------------------------------------------------------------------
 # SETUP ENVIRONMENT
@@ -115,10 +136,11 @@ callbacks = [
     ),
     tf.keras.callbacks.TensorBoard(
         log_dir='logs',
-        histogram_freq=0,
-        write_graph=False,
-        write_images=False,
-        update_freq='epoch'
+        histogram_freq=1,
+        write_graph=True,
+        write_images=True,
+        update_freq='epoch',
+        profile_batch='10,20'
     ),
     tf.keras.callbacks.ReduceLROnPlateau(
         monitor='loss',
@@ -132,58 +154,65 @@ callbacks = [
 # ATTENTION MECHANISM (CBAM)
 # ------------------------------------------------------------------------
 
-class ChannelAttention(layers.Layer):
-    """Channel Attention Module"""
-    def __init__(self, reduction_ratio=16):
-        super(ChannelAttention, self).__init__()
-        self.reduction_ratio = reduction_ratio
-
-    def build(self, input_shape):
-        channels = input_shape[-1]
-        self.avg_pool = layers.GlobalAveragePooling2D(keepdims=True)
-        self.max_pool = layers.GlobalMaxPooling2D(keepdims=True)
-        
-        self.fc1 = layers.Dense(max(1, channels // self.reduction_ratio), activation='relu')
-        self.fc2 = layers.Dense(channels, activation='sigmoid')
-        super().build(input_shape)
-
-    def call(self, inputs):
-        avg_out = self.fc2(self.fc1(self.avg_pool(inputs)))
-        max_out = self.fc2(self.fc1(self.max_pool(inputs)))
-        return inputs * (avg_out + max_out)
-
-
-class SpatialAttention(layers.Layer):
-    """Spatial Attention Module"""
-    def __init__(self, kernel_size=7):
-        super(SpatialAttention, self).__init__()
+class CBAM(layers.Layer):
+    """
+    Convolutional Block Attention Module (CBAM)
+    
+    Applies channel-wise and spatial attention to learned features.
+    - Channel Attention: Which feature maps are important?
+    - Spatial Attention: Which spatial locations are important?
+    """
+    def __init__(self, ratio=8, kernel_size=7, **kwargs):
+        super(CBAM, self).__init__(**kwargs)
+        self.ratio = ratio
         self.kernel_size = kernel_size
 
     def build(self, input_shape):
-        self.conv = layers.Conv2D(
-            1, self.kernel_size, padding='same', activation='sigmoid'
+        channels = int(input_shape[-1])
+        hidden = max(channels // self.ratio, 1)
+        
+        # Global average pooling
+        self.gap = layers.GlobalAveragePooling2D()
+        # Global max pooling
+        self.gmp = layers.GlobalMaxPooling2D()
+        
+        # Channel attention: FC layers with bottleneck
+        self.fc1 = layers.Dense(hidden, activation='relu', 
+                               kernel_initializer='he_normal', use_bias=True)
+        self.fc2 = layers.Dense(channels, activation=None, 
+                               kernel_initializer='he_normal', use_bias=True)
+        
+        # Spatial attention: Conv layer to learn spatial patterns
+        self.spatial_conv = layers.Conv2D(
+            filters=1, kernel_size=self.kernel_size, padding='same', 
+            activation='sigmoid', kernel_initializer='he_normal'
         )
         super().build(input_shape)
 
     def call(self, inputs):
-        avg_out = tf.reduce_mean(inputs, axis=-1, keepdims=True)
-        max_out = tf.reduce_max(inputs, axis=-1, keepdims=True)
-        concat = tf.concat([avg_out, max_out], axis=-1)
-        attention_map = self.conv(concat)
-        return inputs * attention_map
+        # Channel Attention: Learn which feature maps are important
+        avg_pool = self.fc2(self.fc1(self.gap(inputs)))
+        max_pool = self.fc2(self.fc1(self.gmp(inputs)))
+        channel_attn = tf.nn.sigmoid(avg_pool + max_pool)
+        # Reshape for broadcasting: (batch, channels) -> (batch, 1, 1, channels)
+        channel_attn = tf.reshape(channel_attn, (-1, 1, 1, tf.shape(inputs)[-1]))
+        
+        # Apply channel attention to features
+        x = inputs * channel_attn
+        
+        # Spatial Attention: Learn which spatial locations are important
+        avg_spatial = tf.reduce_mean(x, axis=-1, keepdims=True)
+        max_spatial = tf.reduce_max(x, axis=-1, keepdims=True)
+        spatial = tf.concat([avg_spatial, max_spatial], axis=-1)
+        spatial_attn = self.spatial_conv(spatial)
+        
+        # Apply spatial attention
+        return x * spatial_attn
 
-
-class CBAM(layers.Layer):
-    """Convolutional Block Attention Module"""
-    def __init__(self, reduction_ratio=16, kernel_size=7):
-        super(CBAM, self).__init__()
-        self.channel_attention = ChannelAttention(reduction_ratio)
-        self.spatial_attention = SpatialAttention(kernel_size)
-
-    def call(self, inputs):
-        x = self.channel_attention(inputs)
-        x = self.spatial_attention(x)
-        return x
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({"ratio": self.ratio, "kernel_size": self.kernel_size})
+        return cfg
 
 # ------------------------------------------------------------------------
 # DARQN MODEL CREATION
@@ -208,7 +237,7 @@ def create_darqn_model():
     batch3 = layers.BatchNormalization()(conv3)                           # Normalize activations
     
     # -------- ATTENTION MECHANISM (CBAM) --------
-    attention = CBAM(reduction_ratio=8, kernel_size=7)(batch3)           # Focus on important regions
+    attention = CBAM(ratio=8, kernel_size=7)(batch3)           # Focus on important regions
     
     # -------- RECURRENT PROCESSING (TEMPORAL CONTEXT) --------
     flat = layers.Flatten()(attention)                                    # Flatten CNN output
@@ -270,6 +299,28 @@ q_model = create_darqn_model()
 target_model = create_darqn_model()
 target_model.set_weights(q_model.get_weights())
 q_model.summary()
+
+# Load checkpoint if resuming training
+if resume_checkpoint:
+    checkpoint_path = f'./saved_models/darqn_model_episode_{resume_checkpoint}.weights.h5'
+    if os.path.exists(checkpoint_path):
+        print(f"\n{'='*100}")
+        print(f"Loading checkpoint from episode {resume_checkpoint}...")
+        q_model.load_weights(checkpoint_path)
+        target_model.set_weights(q_model.get_weights())
+        resume_from_episode = int(resume_checkpoint)
+        print(f"✓ Weights loaded successfully!")
+        print(f"Resuming training from episode {resume_from_episode + 1}...")
+        print(f"{'='*100}\n")
+    else:
+        print(f"\n{'='*100}")
+        print(f"✗ Checkpoint not found: {checkpoint_path}")
+        print(f"Available checkpoints in ./saved_models/:")
+        checkpoint_files = [f for f in os.listdir('./saved_models/') if 'episode_' in f and f.endswith('.h5')]
+        for f in sorted(checkpoint_files):
+            print(f"  - {f}")
+        print(f"{'='*100}\n")
+        sys.exit(1)
 
 # ------------------------------------------------------------------------
 
@@ -338,10 +389,69 @@ reward_history = []
 loss_history = []
 training_steps_per_episode = []
 
+# Load previous metrics if resuming
+if resume_from_episode > 0:
+    metrics_file = './metrics/training_metrics.json'
+    if os.path.exists(metrics_file):
+        print(f"Loading previous metrics from {metrics_file}...")
+        with open(metrics_file, 'r') as f:
+            previous_metrics = json.load(f)
+        reward_history = previous_metrics.get('reward_history', [])[:resume_from_episode]
+        loss_history = previous_metrics.get('loss_history', [])[:resume_from_episode]
+        training_steps_per_episode = previous_metrics.get('training_steps_per_episode', [])[:resume_from_episode]
+        
+        # Adjust epsilon based on episodes trained
+        epsilon = max(epsilon_min, epsilon * (epsilon_decay ** resume_from_episode))
+        
+        print(f"Loaded {resume_from_episode} episodes of previous training")
+        print(f"- Previous best reward: {max(reward_history):.0f}")
+        print(f"- Previous avg reward: {np.mean(reward_history):.0f}")
+        print(f"- Current epsilon: {epsilon:.4f}\n")
+
+# SIGNAL HANDLER FOR GRACEFUL SHUTDOWN (CTRL+C)
+# ------------------------------------------------------------------------
+
+interrupted = False
+
+def signal_handler(sig, frame):
+    """Handle CTRL+C to save model before exit"""
+    global interrupted, episode, q_model, reward_history, loss_history, training_steps_per_episode
+    interrupted = True
+    print("\n" + "="*100)
+    print("INTERRUPT SIGNAL RECEIVED - SAVING MODEL AND METRICS")
+    print("="*100)
+    
+    # Save complete model
+    checkpoint_path = f'./saved_models/darqn_model_interrupt_ep{episode+1}.h5'
+    q_model.save(checkpoint_path, save_format='h5')
+    print(f"✓ Complete model saved to: {checkpoint_path}")
+    
+    # Save metrics
+    os.makedirs('./metrics', exist_ok=True)
+    metrics_data = {
+        'episodes': list(range(1, episode + 2)),
+        'reward_history': [float(r) for r in reward_history],
+        'loss_history': [float(l) for l in loss_history],
+        'training_steps_per_episode': [int(s) for s in training_steps_per_episode],
+    }
+    with open('./metrics/training_metrics.json', 'w') as f:
+        json.dump(metrics_data, f, indent=2)
+    print(f"✓ Metrics saved to: ./metrics/training_metrics.json")
+    
+    # Print summary
+    print(f"\nTraining interrupted at episode {episode+1}")
+    print(f"Best Reward: {max(reward_history):.0f}")
+    print(f"Average Reward: {np.mean(reward_history):.0f}")
+    print(f"Average Loss: {np.mean(loss_history):.6f}")
+    print("="*100 + "\n")
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+
 # TRAINING LOOP
 # ------------------------------------------------------------------------
 
-for episode in range(episodes):
+for episode in range(resume_from_episode, episodes):
     start = time.time()
     obs, info = env.reset()
     state = initialize_frame_buffer(obs)
@@ -412,8 +522,10 @@ for episode in range(episodes):
 
 env.close()
 
-# Save final model
+# Save final model (complete .h5 format)
+q_model.save('./saved_models/darqn_model_final.h5', save_format='h5')
 q_model.save_weights('./saved_models/darqn_model_final.weights.h5')
+print("✓ Models saved (both .h5 and .weights.h5 formats)")
 
 # Export metrics to JSON for visualization
 import json
