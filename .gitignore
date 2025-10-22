@@ -2,3 +2,4 @@
 logs
 checkpoint
 .github
+.saved_models/*
