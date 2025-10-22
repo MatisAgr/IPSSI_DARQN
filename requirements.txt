@@ -3,4 +3,5 @@ keras
 tensorflow
 ale_py
 gymnasium
-
+matplotlib
+seaborn
