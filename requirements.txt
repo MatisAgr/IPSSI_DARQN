@@ -1,0 +1,6 @@
+numpy
+keras
+tensorflow
+ale_py
+gymnasium
+
