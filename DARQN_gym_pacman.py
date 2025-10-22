@@ -309,12 +309,12 @@ if resume_checkpoint:
         q_model.load_weights(checkpoint_path)
         target_model.set_weights(q_model.get_weights())
         resume_from_episode = int(resume_checkpoint)
-        print(f"✓ Weights loaded successfully!")
+        print(f"Weights loaded successfully!")
         print(f"Resuming training from episode {resume_from_episode + 1}...")
         print(f"{'='*100}\n")
     else:
         print(f"\n{'='*100}")
-        print(f"✗ Checkpoint not found: {checkpoint_path}")
+        print(f"Checkpoint not found: {checkpoint_path}")
         print(f"Available checkpoints in ./saved_models/:")
         checkpoint_files = [f for f in os.listdir('./saved_models/') if 'episode_' in f and f.endswith('.h5')]
         for f in sorted(checkpoint_files):
@@ -424,7 +424,7 @@ def signal_handler(sig, frame):
     # Save complete model
     checkpoint_path = f'./saved_models/darqn_model_interrupt_ep{episode+1}.h5'
     q_model.save(checkpoint_path, save_format='h5')
-    print(f"✓ Complete model saved to: {checkpoint_path}")
+    print(f"Complete model saved to: {checkpoint_path}")
     
     # Save metrics
     os.makedirs('./metrics', exist_ok=True)
@@ -436,7 +436,7 @@ def signal_handler(sig, frame):
     }
     with open('./metrics/training_metrics.json', 'w') as f:
         json.dump(metrics_data, f, indent=2)
-    print(f"✓ Metrics saved to: ./metrics/training_metrics.json")
+    print(f"Metrics saved to: ./metrics/training_metrics.json")
     
     # Print summary
     print(f"\nTraining interrupted at episode {episode+1}")
@@ -525,7 +525,7 @@ env.close()
 # Save final model (complete .h5 format)
 q_model.save('./saved_models/darqn_model_final.h5', save_format='h5')
 q_model.save_weights('./saved_models/darqn_model_final.weights.h5')
-print("✓ Models saved (both .h5 and .weights.h5 formats)")
+print("Models saved (both .h5 and .weights.h5 formats)")
 
 # Export metrics to JSON for visualization
 import json
