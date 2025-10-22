@@ -5,6 +5,7 @@ import ale_py
 import tensorflow as tf
 from collections import deque
 import os
+import time
 
 # ------------------------------------------------------------------------
 # GPU CONFIGURATION
@@ -33,17 +34,17 @@ gym.register_envs(ale_py)
 # ------------------------------------------------------------------------
 
 env_name = "ALE/Pacman-v5"
-model_path = "./saved_models/darqn_model_final.weights.h5"
-render_mode = "human"
+model_path = "./saved_models/darqn_model_final.h5"
+render_mode = None
 frame_stack = 4
-num_test_episodes = 5
+num_test_episodes = 3
+action_space = 5
 
 # ------------------------------------------------------------------------
 # ENVIRONMENT SETUP
 # ------------------------------------------------------------------------
 
 env = gym.make(env_name, render_mode=render_mode)
-action_space = env.action_space.n
 state_shape = (84, 84, frame_stack)
 
 frame_buffer = deque(maxlen=frame_stack)
@@ -69,61 +70,59 @@ def initialize_frame_buffer(initial_obs):
     return np.concatenate(list(frame_buffer), axis=-1)
 
 # ------------------------------------------------------------------------
-# ATTENTION MECHANISMS
+# ATTENTION MECHANISM (CBAM)
 # ------------------------------------------------------------------------
 
-class ChannelAttention(layers.Layer):
-    """Channel Attention Module"""
-    def __init__(self, reduction_ratio=16):
-        super(ChannelAttention, self).__init__()
-        self.reduction_ratio = reduction_ratio
-
-    def build(self, input_shape):
-        channels = input_shape[-1]
-        self.avg_pool = layers.GlobalAveragePooling2D(keepdims=True)
-        self.max_pool = layers.GlobalMaxPooling2D(keepdims=True)
-        
-        self.fc1 = layers.Dense(max(1, channels // self.reduction_ratio), activation='relu')
-        self.fc2 = layers.Dense(channels, activation='sigmoid')
-        super().build(input_shape)
-
-    def call(self, inputs):
-        avg_out = self.fc2(self.fc1(self.avg_pool(inputs)))
-        max_out = self.fc2(self.fc1(self.max_pool(inputs)))
-        return inputs * (avg_out + max_out)
-
-
-class SpatialAttention(layers.Layer):
-    """Spatial Attention Module"""
-    def __init__(self, kernel_size=7):
-        super(SpatialAttention, self).__init__()
+class CBAM(layers.Layer):
+    """
+    Convolutional Block Attention Module (CBAM)
+    
+    Applies channel-wise and spatial attention to learned features.
+    - Channel Attention: Which feature maps are important?
+    - Spatial Attention: Which spatial locations are important?
+    """
+    def __init__(self, ratio=8, kernel_size=7, **kwargs):
+        super(CBAM, self).__init__(**kwargs)
+        self.ratio = ratio
         self.kernel_size = kernel_size
 
     def build(self, input_shape):
-        self.conv = layers.Conv2D(
-            1, self.kernel_size, padding='same', activation='sigmoid'
+        channels = int(input_shape[-1])
+        hidden = max(channels // self.ratio, 1)
+        
+        self.gap = layers.GlobalAveragePooling2D()
+        self.gmp = layers.GlobalMaxPooling2D()
+        
+        self.fc1 = layers.Dense(hidden, activation='relu', 
+                               kernel_initializer='he_normal', use_bias=True)
+        self.fc2 = layers.Dense(channels, activation=None, 
+                               kernel_initializer='he_normal', use_bias=True)
+        
+        self.spatial_conv = layers.Conv2D(
+            filters=1, kernel_size=self.kernel_size, padding='same', 
+            activation='sigmoid', kernel_initializer='he_normal'
         )
         super().build(input_shape)
 
     def call(self, inputs):
-        avg_out = tf.reduce_mean(inputs, axis=-1, keepdims=True)
-        max_out = tf.reduce_max(inputs, axis=-1, keepdims=True)
-        concat = tf.concat([avg_out, max_out], axis=-1)
-        attention_map = self.conv(concat)
-        return inputs * attention_map
+        avg_pool = self.fc2(self.fc1(self.gap(inputs)))
+        max_pool = self.fc2(self.fc1(self.gmp(inputs)))
+        channel_attn = tf.nn.sigmoid(avg_pool + max_pool)
+        channel_attn = tf.reshape(channel_attn, (-1, 1, 1, tf.shape(inputs)[-1]))
+        
+        x = inputs * channel_attn
+        
+        avg_spatial = tf.reduce_mean(x, axis=-1, keepdims=True)
+        max_spatial = tf.reduce_max(x, axis=-1, keepdims=True)
+        spatial = tf.concat([avg_spatial, max_spatial], axis=-1)
+        spatial_attn = self.spatial_conv(spatial)
+        
+        return x * spatial_attn
 
-
-class CBAM(layers.Layer):
-    """Convolutional Block Attention Module"""
-    def __init__(self, reduction_ratio=16, kernel_size=7):
-        super(CBAM, self).__init__()
-        self.channel_attention = ChannelAttention(reduction_ratio)
-        self.spatial_attention = SpatialAttention(kernel_size)
-
-    def call(self, inputs):
-        x = self.channel_attention(inputs)
-        x = self.spatial_attention(x)
-        return x
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({"ratio": self.ratio, "kernel_size": self.kernel_size})
+        return cfg
 
 # ------------------------------------------------------------------------
 # DARQN MODEL RECREATION
@@ -147,13 +146,13 @@ def create_darqn_model():
     batch3 = layers.BatchNormalization()(conv3)
     
     # Attention mechanism (CBAM)
-    attention = CBAM(reduction_ratio=8, kernel_size=7)(batch3)
+    attention = CBAM(ratio=8, kernel_size=7)(batch3)
     
-    # Flatten for recurrent processing
+    # Flatten for merging
     flat = layers.Flatten()(attention)
     
     # Recurrent processing with LSTM for temporal context
-    reshape_lstm = layers.Reshape((21, 128))(attention)
+    reshape_lstm = layers.Reshape((121, 128))(attention)
     lstm1 = layers.LSTM(256, return_sequences=True, activation='relu',
                        name='lstm1', dropout=0.2)(reshape_lstm)
     lstm2 = layers.LSTM(128, return_sequences=False, activation='relu',
@@ -179,13 +178,17 @@ def create_darqn_model():
     advantage_output = layers.Dense(action_space, name='advantage')(advantage_dense)
     
     # Combine value and advantage
-    mean_advantage = layers.Lambda(
-        lambda adv: adv - tf.reduce_mean(adv, axis=1, keepdims=True)
+    value_broadcast = layers.RepeatVector(action_space)(value_output)
+    value_broadcast = layers.Reshape((action_space,))(value_broadcast)
+    
+    advantage_mean = layers.Lambda(
+        lambda x: tf.reduce_mean(x, axis=1, keepdims=True)
     )(advantage_output)
+    advantage_norm = layers.Subtract()([advantage_output, advantage_mean])
     
     q_output = layers.Add(name='q_values')([
-        value_output,
-        mean_advantage
+        value_broadcast,
+        advantage_norm
     ])
     
     model = Model(inputs=input_layer, outputs=q_output, name='DARQN')
@@ -193,9 +196,14 @@ def create_darqn_model():
 
 # Load model
 print("Loading DARQN model...")
-model = create_darqn_model()
-model.load_weights(model_path)
-print("Model loaded successfully!")
+try:
+    model = tf.keras.models.load_model(model_path, custom_objects={'CBAM': CBAM})
+    print("✓ Model loaded successfully!")
+except FileNotFoundError:
+    print(f"✗ Model file not found: {model_path}")
+    print("Creating model from scratch...")
+    model = create_darqn_model()
+    print("✓ Model created successfully!")
 
 # ------------------------------------------------------------------------
 # INFERENCE FUNCTION
@@ -204,7 +212,9 @@ print("Model loaded successfully!")
 def greedy_action_selection(state):
     """Select action greedily (no exploration)"""
     q_values = model.predict(state[np.newaxis], verbose=0)
-    return np.argmax(q_values[0]), np.max(q_values[0])
+    action = np.argmax(q_values[0])
+    max_q = np.max(q_values[0])
+    return action, max_q
 
 # ------------------------------------------------------------------------
 # TESTING LOOP
@@ -214,8 +224,10 @@ print(f"\nTesting DARQN on {num_test_episodes} episodes...")
 print("="*100)
 
 test_rewards = []
+test_steps = []
 
 for episode in range(num_test_episodes):
+    start = time.time()
     obs, info = env.reset()
     state = initialize_frame_buffer(obs)
     
@@ -235,13 +247,17 @@ for episode in range(num_test_episodes):
         state = next_state
         steps += 1
     
+    elapsed = time.time() - start
     test_rewards.append(total_reward)
-    print(f"Test Episode {episode+1}/{num_test_episodes} | Reward: {total_reward:.0f} | Steps: {steps}")
+    test_steps.append(steps)
+    print(f"Episode {episode+1}/{num_test_episodes} | Reward: {total_reward:6.0f} | Steps: {steps:4d} | Time: {elapsed:6.2f}s")
 
 print("="*100)
-print(f"Average Test Reward: {np.mean(test_rewards):.0f}")
-print(f"Max Test Reward: {np.max(test_rewards):.0f}")
-print(f"Min Test Reward: {np.min(test_rewards):.0f}")
+print(f"Average Test Reward:  {np.mean(test_rewards):6.1f}")
+print(f"Max Test Reward:      {np.max(test_rewards):6.0f}")
+print(f"Min Test Reward:      {np.min(test_rewards):6.0f}")
+print(f"Std Reward:           {np.std(test_rewards):6.2f}")
+print(f"Average Steps/Ep:     {np.mean(test_steps):6.1f}")
 print("="*100)
 
 env.close()
