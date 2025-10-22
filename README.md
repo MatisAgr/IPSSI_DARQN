@@ -179,7 +179,7 @@ Episode: 151/500 | Original: 19 | Custom: 19 | Eps: 0.469 | Time: 50.96s | Steps
 
 ## 📊 Graphiques d'entraînement
 
-Les visualisations suivantes sont générées automatiquement avec `generate_training_report.py` après chaque phase d'entraînement.
+TODO: faire des graphiques après entraînement
 
 ### Tableau récapitulatif
 
@@ -201,17 +201,6 @@ Les visualisations suivantes sont générées automatiquement avec `generate_tra
 
 ![Steps Analysis](./images/04_steps_analysis.png)
 
----
-
-## Générer les rapports
-
-```bash
-# Créer les visualisations PNG à partir des métriques
-python generate_training_report.py
-
-# Les images sont générées dans ./images/
-# Idéal pour intégrer au README ou générer des rapports
-```
 
 ---
 
