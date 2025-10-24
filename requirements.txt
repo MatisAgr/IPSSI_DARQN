@@ -1,7 +1,11 @@
 numpy
-keras
-tensorflow
+torch
+torchvision
 ale_py
 gymnasium
 matplotlib
 seaborn
+tensorboard
+
+# For CUDA support (NVIDIA GPUs):
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
