@@ -4,3 +4,4 @@ checkpoint
 .github
 saved_models
 metrics
+__pycache__
