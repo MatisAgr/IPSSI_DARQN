@@ -6,6 +6,8 @@ Agent IA jouant Pac-Man avec :
 - **LSTM** : prédire le mouvement des fantômes
 - **Dueling DQN** : séparer valeur de l'état et avantage des actions
 
+https://github.com/user-attachments/assets/1506fef2-52f8-4ad4-8ea4-0426ab4d2f37
+
 **Versions disponibles :**
 - **TensorFlow/Keras** : `DARQN_gym_pacman.py` (version principale)
 - **PyTorch** : `DARQN_gym_pacman_pytorch.py` (version expérimentale avec GPU CUDA)
