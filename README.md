@@ -6,6 +6,10 @@ Agent IA jouant Pac-Man avec :
 - **LSTM** : prédire le mouvement des fantômes
 - **Dueling DQN** : séparer valeur de l'état et avantage des actions
 
+**Versions disponibles :**
+- **TensorFlow/Keras** : `DARQN_gym_pacman.py` (version principale)
+- **PyTorch** : `DARQN_gym_pacman_pytorch.py` (version expérimentale avec GPU CUDA)
+
 ```mermaid
 graph LR
     A["Pac-Man<br/>250×160 RGB"] 
@@ -125,7 +129,9 @@ Distribution :
 
 ## 📈 Résultats d'entraînement
 
-### Progression d'apprentissage
+### Version TensorFlow/Keras
+
+#### Progression d'apprentissage
 
 ```mermaid
 graph LR
@@ -137,7 +143,7 @@ graph LR
     A -->|Loss ↓| B -->|Loss ↓| C -->|Convergence| D
 ```
 
-### Statistiques actuelles (100 épisodes)
+#### Statistiques actuelles (100 épisodes)
 
 ```
 ====================================================================================================
@@ -177,34 +183,57 @@ Episode: 151/500 | Original: 19 | Custom: 19 | Eps: 0.469 | Time: 50.96s | Steps
 
 ---
 
-## 📊 Graphiques d'entraînement
+### Version PyTorch (Expérimentale)
 
-TODO: faire des graphiques après entraînement
+**Version développée par curiosité pour explorer PyTorch avec GPU CUDA**
 
-### Tableau récapitulatif
+#### Record historique après ~24h d'entraînement
 
-![Summary Table](./images/00_summary_table.png)
+```
+Episode: 434/500 | Reward: 328 | Eps: 0.114 | Time: 34.07s | Steps: 700 | Memory: 50000
+  └─ Loss -> Avg: 0.294509 | Min: 0.025491 | Max: 3.623665 | Trainings: 175
+```
 
-### Analyse des récompenses
+**🏆 Meilleur score obtenu : 328 points**
 
-![Reward Analysis](./images/01_reward_analysis.png)
+Cette version PyTorch utilise :
+- GPU CUDA acceleration (NVIDIA RTX 4070 SUPER)
+- Huber Loss (SmoothL1Loss) pour plus de stabilité
+- Gradient clipping strict (norm=1.0)
+- Reward clipping ([-1, 1])
+- Learning rate optimisé (0.0001)
 
-### Analyse des pertes
-
-![Loss Analysis](./images/02_loss_analysis.png)
-
-### Progression globale
-
-![Training Progress](./images/03_training_progress.png)
-
-### Analyse des étapes d'entraînement
-
-![Steps Analysis](./images/04_steps_analysis.png)
+Le temps d'entraînement moyen par épisode est de 15-50 secondes selon la longueur de la partie.
 
 
 ---
 
+## 📊 Graphiques d'entraînement
+
+Soon maybe....
+
+### Tableau récapitulatif (TensorFlow/Keras)
+
+NOP
+
+### Analyse des récompenses
+
+NOP
+### Analyse des pertes
+
+NOP
+### Progression globale
+
+NOP
+### Analyse des étapes d'entraînement
+
+NOP
+
+---
+
 ## Quick Start
+
+### Version TensorFlow/Keras (principale)
 
 ```bash
 # Installer les dépendances
@@ -228,11 +257,34 @@ python DARQN_gym_pacman.py --resume 180 --episodes 300
 tensorboard --logdir=./logs
 ```
 
+### Version PyTorch (expérimentale)
+
+```bash
+# Activer l'environnement virtuel
+.venv\Scripts\activate
+
+# Installer PyTorch avec CUDA (pour GPU NVIDIA)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# Entraîner l'agent avec PyTorch
+python DARQN_gym_pacman_pytorch.py
+
+# Reprendre l'entraînement depuis un checkpoint
+python DARQN_gym_pacman_pytorch.py --resume 200
+
+# Continuer jusqu'à 500 episodes
+python DARQN_gym_pacman_pytorch.py --resume 200 --episodes 500
+```
+
+**Note :** La version PyTorch nécessite un GPU NVIDIA compatible CUDA pour de meilleures performances.
+
+---
+
 ### Options de ligne de commande
 
 | Argument | Type | Défaut | Description |
 |----------|------|--------|-------------|
-| `--resume EPISODE` | int | None | Reprendre depuis episode N (charge `darqn_model_episode_N.weights.h5`) |
+| `--resume EPISODE` | int | None | Reprendre depuis episode N (charge `darqn_model_episode_N.weights.h5` ou `.pth`) |
 | `--episodes NUM` | int | 500 | Nombre total d'episodes à entraîner |
 
 **Exemples pratiques :**
@@ -258,14 +310,17 @@ python DARQN_gym_pacman.py --resume 180 --episodes 380
 
 ```
 IPSSI_DARQN/
-├── DARQN_gym_pacman.py          # Entraînement principal
+├── DARQN_gym_pacman.py           # Entraînement TensorFlow/Keras
+├── DARQN_gym_pacman_pytorch.py   # Entraînement PyTorch (expérimental)
 ├── test_darqn_pacman.py          # Tests & évaluation
+├── test_pytorch_model.py         # Tests modèle PyTorch
 ├── launch_tensorboard.py         # Visualisation temps réel
 ├── visualize_metrics.py          # Graphiques d'entraînement
-├── requirements.txt
-├── saved_models/                 # Checkpoints du modèle
-│   ├── darqn_model_final.weights.h5
-│   ├── darqn_model_episode_20.weights.h5
+├── requirements.txt              # Dépendances Python
+├── saved_models/                 # Checkpoints des modèles
+│   ├── darqn_model_final.weights.h5      # TensorFlow
+│   ├── darqn_model_episode_20.weights.h5 # TensorFlow
+│   ├── darqn_model_episode_20.pth        # PyTorch
 │   └── ...
 ├── metrics/                      # Données d'entraînement
 │   ├── training_metrics.json
@@ -308,5 +363,8 @@ Hyperparamètres clés :
 - Gamma: 0.99 (futur discount)
 - Batch size: 32
 - Memory size: 50,000
+
+### Environnement ALE pour Pacman Atari 2600 ROM
+https://ale.farama.org/environments/pacman/
 
 ---
