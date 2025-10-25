@@ -120,13 +120,6 @@ Trainable: 8,904,857 (99.99%)
 Non-trainable: 448 (BatchNorm)
 ```
 
-Distribution :
-- CNN : ~1.3%
-- LSTM : ~6.6%
-- Dense layers : ~92.1%
-
-**Pourquoi gros ?** Dense1 : 15,488 × 512 = 7.9M params
-
 ---
 
 ## 📈 Résultats d'entraînement
